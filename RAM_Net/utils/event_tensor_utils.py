@@ -91,7 +91,7 @@ def events_to_voxel_grid(events, num_bins, width, height):
 
     if deltaT == 0:
         deltaT = 1.0
-
+    #print("events 1", events[:,0])
     events[:, 0] = (num_bins - 1) * (events[:, 0] - first_stamp) / deltaT
     ts = events[:, 0]
     xs = events[:, 1].astype(np.int)

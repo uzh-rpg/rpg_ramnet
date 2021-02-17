@@ -6,6 +6,8 @@ from .submodules import \
     ConvLayer, UpsampleConvLayer, TransposedConvLayer, \
     RecurrentConvLayer, Recurrent2ConvLayer, RecurrentPhasedConvLayer, ResidualBlock, ConvLSTM, \
     ConvGRU, RecurrentResidualLayer
+import matplotlib.pyplot as plt
+
 
 
 def skip_concat(x1, x2):
@@ -211,7 +213,6 @@ class StateNetPhasedRecurrent(BaseStateNet):
 
         super_states = []
         states_lstm = {'encoders': [], 'state_comb': []}
-
         for i, encoder in enumerate(self.encoders_events):
             if self.recurrent_block_type == 'conv':
                 x = encoder(x)
@@ -225,7 +226,6 @@ class StateNetPhasedRecurrent(BaseStateNet):
                 _, super_state = self.apply_state_combination(x, prev_super_state[i],
                                                               self.state_combination_events[i],
                                                               prev_super_state[i])
-
                 state_lstm_state_comb = super_state
             else:
                 super_state, state_lstm_state_comb = self.apply_state_combination(x, prev_super_state[i],
@@ -236,10 +236,18 @@ class StateNetPhasedRecurrent(BaseStateNet):
             states_lstm['encoders'].append(state_lstm_encoder)
             states_lstm['state_comb'].append(state_lstm_state_comb)
 
+        '''fig, ax = plt.subplots(ncols=3, nrows=1)
+        ax[0].imshow(super_states[0][0][0].cpu().numpy())
+        ax[0].set_title("super states 0")
+        ax[1].imshow(super_states[1][0][0].cpu().numpy())
+        ax[1].set_title("super_states 1")
+        ax[2].imshow(super_states[2][0][0].cpu().numpy())
+        ax[2].set_title("super_states 2")
+        plt.show()'''
+
         return super_states, states_lstm
 
     def forward_images(self, x, prev_super_state, prev_states_lstm, times):
-
         x = self.head_rgb(x)
 
         # initialize prev_states_lstm if None
@@ -284,6 +292,15 @@ class StateNetPhasedRecurrent(BaseStateNet):
 
             states_lstm['encoders'].append(state_lstm_encoder)
             states_lstm['state_comb'].append(state_lstm_state_comb)
+
+        '''fig, ax = plt.subplots(ncols=3, nrows=1)
+        ax[0].imshow(super_states[0][0][0].cpu().numpy())
+        ax[0].set_title("super states 0 image")
+        ax[1].imshow(super_states[1][0][0].cpu().numpy())
+        ax[1].set_title("super_states 1 image")
+        ax[2].imshow(super_states[2][0][0].cpu().numpy())
+        ax[2].set_title("super_states 2 image")
+        plt.show()'''
 
         return super_states, states_lstm
 

@@ -31,7 +31,8 @@ class LSTMTrainer(BaseTrainer):
         self.data_loader = data_loader
         self.valid_data_loader = valid_data_loader
         self.valid = True if self.valid_data_loader is not None else False
-        self.log_step = int(np.sqrt(self.batch_size))
+        #self.log_step = int(np.sqrt(self.batch_size))
+        self.log_step = 1
         self.num_previews = config['trainer']['num_previews']
         self.num_val_previews = config['trainer']['num_val_previews']
         self.record_every_N_sample = 5
@@ -42,11 +43,9 @@ class LSTMTrainer(BaseTrainer):
         self.loss_composition = config['trainer']['loss_composition']
         self.loss_weights = config['trainer']['loss_weights']
         self.baseline = config['data_loader']['train']['baseline']
-        self.calculate_total_metrics = []
+        #self.calculate_total_metrics = []
         self.added_tensorboard_graph = False
         self.state_combination = config['model']['state_combination']
-
-        self.state_preview_flag = False
 
         if config['use_phased_arch']:
             self.use_phased_arch = True
@@ -111,7 +110,7 @@ class LSTMTrainer(BaseTrainer):
         image = item['image'].to(self.gpu)
         semantic = item['semantic'].to(self.gpu) if self.use_semantic_loss else None
         times = item['times'].float().to(self.gpu) if self.use_phased_arch else None
-        return events, image, target, flow, semantic, times
+        return events, image, target, semantic, times
 
     @staticmethod
     def make_preview(event_previews, predicted_targets, groundtruth_targets):
@@ -134,7 +133,6 @@ class LSTMTrainer(BaseTrainer):
         # event_previews: a list of [1 x 1 x H x W] event previews
         # predicted_frames: a list of [1 x 1 x H x W] predicted frames
         # for movie, we need to pass [1 x T x 1 x H x W] where T is the time dimension
-
         video_tensor = None
         for i in torch.arange(len(event_previews)):
             # voxel = quick_norm(event_previews[i])
@@ -223,6 +221,7 @@ class LSTMTrainer(BaseTrainer):
                 if self.use_mse_loss:
                     total_loss_dict['L_mse'] += mse
 
+        #print("overall total loss: ", total_loss_dict['loss'])
         return total_loss_dict
 
     def forward_pass_sequence(self, sequence, record=False):
@@ -232,152 +231,105 @@ class LSTMTrainer(BaseTrainer):
         assert (L > 0)
 
         # list of per-iteration losses (summed after the loop)
+
         if record:
             predicted_targets = {}
-            if self.state_preview_flag:
-                state_previews = {}
             previews = {}
             grad_loss_frames = {}
             groundtruth_targets = []
 
         # initialize the K last predicted targets with -1
-        N, _, H, W = sequence[0]['depth_image'].shape
-        prev_states_lstm = {}
-        for k in range(0, self.every_x_rgb_frame):
-            prev_states_lstm['events{}'.format(k)] = None
-            prev_states_lstm['depth{}'.format(k)] = None
-        prev_states_lstm['image'] = None
+        #N, _, H, W = sequence[0]['depth_image'].shape
+        prev_states_lstm = [{'image_last': None, 'events_last': None} for x in range(self.batch_size)]
         losses = {}
         total_batch_losses = {}
         new_target = None
         loss_dict = {'losses': [], 'grad_losses': [], 'mse_losses': []}
 
-        prev_super_states = {'image': None}
+        prev_super_states = [None] * self.batch_size
+
         for l in range(L):
             item = sequence[l]
-
-            '''fig, ax = plt.subplots(ncols=6, nrows=1)
-            for ii in range(0,6):
-                ax[ii].imshow(item["image"][0, ii, :, :])
-                #ax[ii].imshow(element[l][key].cpu().numpy()[0])
-            plt.show()'''
-            
-            # new_events, new_image, new_target, flow01, semantic, times = self._to_input_and_target(item)
-
             # the output of the network is a [N x 1 x H x W] tensor containing the image prediction
             # prev_super_states['image'] is given to model, because image network branch is always run as a last
             # step of one forward pass (events first, then image).
             new_predicted_targets, new_super_states, new_states_lstm = self.model(item,
-                                                                                  prev_super_states['image'],
+                                                                                  prev_super_states,
                                                                                   prev_states_lstm)
-
             grad_loss_frames_entries = {}
-            for key, value in new_predicted_targets.items():
-                if not self.loss_composition or key in self.loss_composition:
-                    weight_idx = self.loss_composition.index(key)
-                    # or (self.baseline == "e" and (l+1) % 5 == 0):
-                    if key not in losses:
-                        # losses[key] = {'losses': [], 'grad_losses': [], 'mse_losses': []}
-                        losses[key] = loss_dict
-                    new_target = item['depth_' + key].to(self.gpu)
-                    is_nan = torch.isnan(new_target)
-                    #print(new_predicted_targets[key][~is_nan].shape, torch.isnan(new_target).shape)
-                    losses[key], grad_loss_frames_entries[key] = self.calculate_losses(new_predicted_targets[key],
-                                                                                       new_target,
-                                                                                       self.loss_weights[weight_idx],
-                                                                                       losses[key], record)
+            # create loss dict
 
-            # calculate overall metrics (used for debugging):
-            if not record:
-                for key, prediction in new_predicted_targets.items():
-                    metrics = self._eval_metrics(prediction, item['depth_' + key])
-                    self.calculate_total_metrics.append(metrics)
+
+            for i, new_predicted_target in enumerate(new_predicted_targets):
+
+                for key, value in new_predicted_target.items():
+                    if not self.loss_composition or key in self.loss_composition:
+                        # only calculate image loss if img_loss flag is true:
+                        if "image" not in key or ("image" in key and item[i][-1]["img_loss"]):
+                            weight_idx = self.loss_composition.index(key)
+                            # or (self.baseline == "e" and (l+1) % 5 == 0):
+                            if key not in losses:
+                                # losses[key] = {'losses': [], 'grad_losses': [], 'mse_losses': []}
+                                losses[key] = loss_dict
+                            new_target = item[i][-2]["depth"].to(self.gpu)
+
+                            losses[key], grad_loss_frames_entries[key] = self.calculate_losses(new_predicted_target[key],
+                                                                                               new_target[None, :],
+                                                                                               self.loss_weights[weight_idx],
+                                                                                               losses[key], record)
             if record:
                 with torch.no_grad():
-                    if self.state_preview_flag:
-                        if prev_super_states['image'] is not None and (l == 1 or l == int(L/2) or l == L-1):
-                            if self.baseline == 'rgb':
-                                loop_range = 1
-                            elif self.baseline == 'e' or self.baseline == 'ergb0':
-                                loop_range = self.every_x_rgb_frame
-                            else:
-                                loop_range = self.every_x_rgb_frame + 1
-                            for ii in range(loop_range):
-                                if ii == 0:
-                                    # events0 or image for rgb baseline
-                                    prev_state = prev_super_states['image']
-                                    if self.baseline == 'rgb':
-                                        current_state = new_super_states['image']
-                                        key = 'image'
-                                    else:
-                                        current_state = new_super_states['events0']
-                                        key = 'events0'
-                                elif ii == loop_range-1:
-                                    # last entry in batch = image. for e baselines, batch contains one less entry.
-                                    prev_state = new_super_states['events{}'.format(loop_range - 2)]
-                                    current_state = new_super_states['image']
-                                    key = 'image'
-                                else:
-                                    # events1 - eventsX
-                                    prev_state = new_super_states['events{}'.format(ii - 1)]
-                                    current_state = new_super_states['events{}'.format(ii)]
-                                    key = 'events{}'.format(ii)
+                    if len(item[0]) > 2:
 
-                                state_preview_grid = None
+                        # get indexes of last events and image
+                        last_event_index = None
+                        for k, entry in reversed(list(enumerate(item[0]))):
+                            if "events" in list(entry.keys())[0]:
+                                last_event_index = k
+                                break
 
-                                for i in range(len(current_state)):
-                                    if not bool(self.baseline) and self.state_combination == "convlstm":
-                                        state_change = (current_state[i][0][0].cpu().numpy()  # .view(56, -1)
-                                                        - prev_state[i][0][0].cpu().numpy())  # .view(56, -1)
-                                    else:
-                                        state_change = (current_state[i][0].cpu().numpy()  # .view(56, -1)
-                                                        - prev_state[i][0].cpu().numpy())  # .view(56, -1)
-                                    percentile_98 = np.percentile(np.abs(state_change), 98)
-                                    eps = 1e-8
-                                    state_change = state_change / (percentile_98 + eps)
-                                    state_change = np.clip(state_change, -1, 1)
-                                    dimension = state_change.shape[0]
-                                    # only save 3 slices for preview out of the whole state tensor
-                                    state_change = state_change[(0, int(dimension / 2), dimension - 1), :, :]
-                                    state_change = zoom(state_change, (1, pow(2, i), pow(2, i)), order=1)
-                                    concat_state_change = np.zeros([state_change.shape[1], state_change.shape[1] * 3])
-                                    concat_state_change[:, 0:state_change.shape[1]] = state_change[0, :, :]
-                                    concat_state_change[:,
-                                    state_change.shape[1]:state_change.shape[1] * 2] = state_change[1, :, :]
-                                    concat_state_change[:,
-                                    state_change.shape[1] * 2:state_change.shape[1] * 3] = state_change[2, :, :]
-                                    if state_preview_grid is None:
-                                        state_preview_grid = concat_state_change
-                                    else:
-                                        state_preview_grid = np.append(state_preview_grid, concat_state_change, axis=0)
-                                    # fig, ax = plt.subplots(ncols=1, nrows=1)
-                                    # ax.imshow(state_preview_grid)
-                                    # plt.show()
+                        last_image_index = None
+                        for k, entry in reversed(list(enumerate(item[0]))):
+                            if "image" in list(entry.keys())[0]:
+                                last_image_index = k
+                                break
 
-                                if key not in state_previews:
-                                    state_previews[key] = []
-                                if len(state_previews[key]) == 0:
-                                    state_previews[key].append(state_preview_grid)
-                                else:
-                                    state_previews[key][-1] = np.append(state_previews[key][-1], state_preview_grid,
-                                                                        axis=1)
+                        for key, value in new_predicted_targets[0].items():
+                            if key not in predicted_targets:
+                                predicted_targets[key] = []
+                            predicted_targets[key].append(new_predicted_targets[0][key].clone())
 
-                    for key, value in new_predicted_targets.items():
-                        if key not in predicted_targets:
-                            predicted_targets[key] = []
-                        predicted_targets[key].append(new_predicted_targets[key].clone())
-                        if key not in previews:
-                            previews[key] = []
-                        previews[key].append(torch.sum(item[key].to(self.gpu), dim=1).unsqueeze(0))
-                        if not self.loss_composition or key in self.loss_composition:
-                            #(self.baseline == "e" and l+1 % 5 == 0):
-                            if key not in grad_loss_frames:
-                                grad_loss_frames[key] = []
-                            grad_loss_frames[key].extend(grad_loss_frames_entries[key])
-                    groundtruth_targets.append(new_target.clone())
+                        for j, data_item in enumerate(item[0]):
+                            key = list(data_item.keys())[0]
+                            if key != "img_loss":
+                                if key not in previews:
+                                    previews[key] = []
+                                previews[key].append(torch.sum(data_item[key].to(self.gpu), dim=0).unsqueeze(0)[None, :])
+
+                        if last_event_index is not None:
+                            if "events_last" not in previews:
+                                previews['events_last'] = []
+                            previews['events_last'].append(
+                                torch.sum(list(item[0][last_event_index].values())[0].to(self.gpu), dim=0).unsqueeze(0)[None, :])
+
+                        if last_image_index is not None:
+                            if "image_last" not in previews:
+                                previews['image_last'] = []
+                            previews['image_last'].append(
+                                torch.sum(list(item[0][last_image_index].values())[0].to(self.gpu), dim=0).unsqueeze(0)[None,
+                                :])
+
+                        for key in self.loss_composition:
+                            if "image" not in key or ("image" in key and item[0][-1]["img_loss"]):
+                                if key not in grad_loss_frames:
+                                    grad_loss_frames[key] = []
+                                grad_loss_frames[key].extend(grad_loss_frames_entries[key])
+
+                        groundtruth_targets.append(new_target.clone()[None, :])
 
             prev_states_lstm = new_states_lstm
             prev_super_states = new_super_states
+
         for key, value in losses.items():
             total_batch_losses = self.calculate_total_batch_loss(losses[key], total_batch_losses, L)
             #print("total batch loss: ", key, total_batch_losses['loss'])
@@ -386,8 +338,7 @@ class LSTMTrainer(BaseTrainer):
             predicted_targets if record else None, \
             groundtruth_targets if record else None, \
             previews if record else None, \
-            grad_loss_frames if record else None, \
-            state_previews if (record and self.state_preview_flag) else None
+            grad_loss_frames if record else None
 
     def _train_epoch(self, epoch):
         """
@@ -444,7 +395,7 @@ class LSTMTrainer(BaseTrainer):
         all_losses_in_batch = {}
         for batch_idx, sequence in enumerate(self.data_loader):
             self.optimizer.zero_grad()
-            losses, _, _, _, _, _ = self.forward_pass_sequence(sequence)
+            losses, _, _, _, _ = self.forward_pass_sequence(sequence)
             loss = losses['loss']
             # loss_images.backward(retain_graph=True)
             loss.backward()
@@ -470,8 +421,8 @@ class LSTMTrainer(BaseTrainer):
                     loss_str = ''
                     for loss_name, loss_value in losses.items():
                         loss_str += '{}: {:.4f} '.format(loss_name, loss_value.item())
-                    self.logger.info('Train Epoch: {} [{}/{} ({:.0f}%)] {}'.format(
-                        epoch,
+                    self.logger.info('Train Epoch: {}, batch_idx: {}, [{}/{} ({:.0f}%)] {}'.format(
+                        epoch, batch_idx,
                         batch_idx * self.data_loader.batch_size,
                         len(self.data_loader) * self.data_loader.batch_size,
                         100.0 * batch_idx / len(self.data_loader),
@@ -480,8 +431,6 @@ class LSTMTrainer(BaseTrainer):
         with torch.no_grad():
             # create a set of previews and log them
             previews = []
-            if self.state_preview_flag:
-                previews_states = {}
             total_metrics = np.zeros(len(self.metrics))
             self.preview_count = 0
 
@@ -492,19 +441,18 @@ class LSTMTrainer(BaseTrainer):
                 # every element in sequence is a [C x H x W] tensor
                 # but the model requires [1 x C x H x W] tensor, so
                 # we preprocess the data here to adjust to this expected format
-                '''for i in range(len(sequence)):
-                    print("lstm trainer:", len(sequence), sequence[i]['depth_image'].shape)'''
-                for data_items in sequence:
-                    for key, item in data_items.items():
-                        if key != "depth_image" or len(item.shape) < 4:
-                            item.unsqueeze_(dim=0)
 
-                _, predicted_targets, groundtruth_targets, previews_outputs, grad_loss_frames, \
-                    state_previews = self.forward_pass_sequence(sequence, record=True)
+                # adapt shape of sequence inputs as if batch size = 1
+                for i in range(len(sequence)):
+                    sequence[i] = [sequence[i]]
+
+                _, predicted_targets, groundtruth_targets, previews_outputs, grad_loss_frames\
+                    = self.forward_pass_sequence(sequence, record=True)
 
                 fig = plot_grad_flow_bars(self.model.named_parameters())
                 self.writer.add_figure('grad_figure', fig, global_step=epoch)
                 for key in predicted_targets.keys():
+                    #if key != "events_last":
                     hist_idx = len(predicted_targets[key]) - 1  # choose an idx to plot
                     self.writer.add_histogram(f'{self.preview_count}_prediction_{key}',
                                               predicted_targets[key][hist_idx],
@@ -514,7 +462,6 @@ class LSTMTrainer(BaseTrainer):
                                               global_step=epoch)
                     total_metrics += self._eval_metrics(predicted_targets[key][0], groundtruth_targets[0])
 
-
                     if self.movie:
                         video_tensor = self.make_movie(previews_outputs[key], predicted_targets[key],
                                                               groundtruth_targets)
@@ -523,13 +470,8 @@ class LSTMTrainer(BaseTrainer):
                             video_tensor, global_step=epoch, fps=5)
                     if self.still_previews:
                         step = self.record_every_N_sample
-                        if self.state_preview_flag:
-                            if key not in previews_states:
-                                previews_states[key] = []
-                            for i in range(len(state_previews[key])):
-                                previews_states[key].append(state_previews[key][i][None, :])
                         previews.append(self.make_preview(
-                            previews_outputs[key][::step], predicted_targets[key][::step], groundtruth_targets[::step]))
+                            previews_outputs[key][::step], predicted_targets[key][::step], groundtruth_targets[:len(predicted_targets[key]):step]))
 
                     if self.grid_loss and (not self.loss_composition or key in self.loss_composition):
                         # or (self.baseline == "e" and l+1 % 5 == 0)):
@@ -558,8 +500,6 @@ class LSTMTrainer(BaseTrainer):
             'metrics': (total_metrics / self.num_previews).tolist(),
             'previews': previews
         }
-        if self.state_preview_flag:
-            log['previews_states'] = previews_states
         #print("num_previes: ", self.num_previews)
         #print("log metrics: ", log['metrics'])
 
@@ -584,7 +524,7 @@ class LSTMTrainer(BaseTrainer):
         all_losses_in_batch = {}
         with torch.no_grad():
             for batch_idx, sequence in enumerate(self.valid_data_loader):
-                losses, _, _, _, _, _ = self.forward_pass_sequence(sequence)
+                losses, _, _, _, _ = self.forward_pass_sequence(sequence)
                 for loss_name, loss_value in losses.items():
                     if loss_name not in all_losses_in_batch:
                         all_losses_in_batch[loss_name] = []
@@ -605,19 +545,16 @@ class LSTMTrainer(BaseTrainer):
                 # data is a sequence containing L successive events <-> frames pairs
                 sequence = self.valid_data_loader.dataset[val_preview_idx]
 
-                # every element in sequence is a [C x H x W] tensor
-                # but the model requires [1 x C x H x W] tensor, so
-                # we preprocess the data here to adjust to this expected format
-                for data_items in sequence:
-                    for key, item in data_items.items():
-                        if key != "depth_image" or len(item.shape) < 4:
-                            item.unsqueeze_(dim=0)
+                # adjust format of single sequence to format of a batch.
+                for i in range(len(sequence)):
+                    sequence[i] = [sequence[i]]
 
                 _, predicted_targets, groundtruth_targets, previews_outputs, \
-                    grad_loss_frames, states_previews \
+                    grad_loss_frames \
                     = self.forward_pass_sequence(sequence, record=True)
 
                 for key in predicted_targets.keys():
+                    #if key != "events_last":
                     total_metrics += self._eval_metrics(predicted_targets[key][0], groundtruth_targets[0])
                     if self.movie:
                         video_tensor = self.make_movie(previews_outputs[key], predicted_targets[key], groundtruth_targets)

@@ -35,8 +35,8 @@ def FLAGS():
     flags = parser.parse_args()
     return flags
 
-
-depth_values = [10, 20, 30, 80, 250, 500]
+# specify the depths for which the metrics should be calculated
+depth_values = [10, 20, 30]
 
 metrics_keywords = [f"_abs_rel_diff",
                     f"_squ_rel_diff",
@@ -72,7 +72,7 @@ def eval_metrics(output, target):
 
 
 def prepare_depth_data(target, prediction, clip_distance, down_scale_factor=1.0, reg_factor=0.0):
-    # retreiv metric depth from log depth
+    # log depth to metric depth
     prediction = np.exp(reg_factor * (prediction - np.ones((prediction.shape[0], prediction.shape[1]), dtype=np.float32)))
     target = np.exp(reg_factor * (target - np.ones((target.shape[0], target.shape[1]), dtype=np.float32)))
 
@@ -80,8 +80,8 @@ def prepare_depth_data(target, prediction, clip_distance, down_scale_factor=1.0,
     target *= clip_distance
     prediction *= clip_distance
 
-    scale = 1.0
-    prediction = prediction / scale
+    scale = 1
+    prediction = prediction * scale
     prediction = np.clip(prediction, np.exp(-1 * reg_factor) * clip_distance, clip_distance)
 
     if down_scale_factor < 1.0:
@@ -124,9 +124,6 @@ def rescale_by_the_median(target, prediction, debug = False):
     else:
         prediction += median_diff
 
-    #target *= 1000.00 
-    #prediction *= 1000.00
- 
     if debug:
         print("target median[adjusted]:", np.median(target))
         print("prediction median[adjusted]:", np.median(prediction))
@@ -134,27 +131,10 @@ def rescale_by_the_median(target, prediction, debug = False):
         print("target max[adjusted]:", np.max(target))
         print("prediction min[adjusted]:", np.min(prediction))
         print("prediction max[adjusted]:", np.max(prediction))
-        
-    #if np.min(target) < 0:
-    #    target += np.min(target)
-    #elif np.min(target) > 0:
-    #    target -= np.min(target)
-    #if np.min(prediction) < 0:
-    #    prediction += np.min(prediction)
-    #elif np.min(prediction) > 0:
-    #    prediction += np.min(prediction)
-
-    
-    #if debug:
-    #    print("target max[adjusted]:", np.max(target))
-    #    print("prediction max[adjusted]:", np.max(prediction))
-    #    print("target min[adjusted]:", np.min(target))
-    #    print("prediction min[adjusted]:", np.min(prediction))
 
     return target, prediction
 
 def display_high_contrast_colormap (idx, target, prediction, prefix="", colormap = 'terrain', debug=False, folder_name=None):
-
     if folder_name is not None or debug:
         percent = 1.0
         second_largest = sorted(list(set(target.flatten().tolist())))[-2]
@@ -204,8 +184,8 @@ def add_to_metrics(idx, metrics, target_, prediction_, mask, event_frame=None, p
         metrics = {k: 0 for k in metrics_keywords}
 
     prediction_mask = (prediction_ >= 0) & (prediction_ <= np.amax(target_[~np.isnan(target_)]))
-    depth_mask = (target_ >= 0) & (target_ <= np.amax(target_[~np.isnan(target_)])) # make (target> 3) for mvsec night drives
-    #mask = mask & depth_mask & prediction_mask  # no prediction and depth mask needed for simulation data
+    depth_mask = (target_ >= 0) & (target_ <= np.amax(target_[~np.isnan(target_)]))
+    mask = mask & depth_mask & prediction_mask
     eps = 1e-5
 
     target = target_[mask] #np.where(mask, target_, np.max(target_[~np.isnan(target_)]))# target_[mask] but without lossing shape
@@ -286,6 +266,11 @@ def add_to_metrics(idx, metrics, target_, prediction_, mask, event_frame=None, p
         ax[3, 2].imshow(mask)
         ax[3, 2].set_title("mask frame")
 
+        #ax[3,0].hist(abs_diff_.reshape((-1,)), bins=np.arange(1000))
+        #ax[3,0].set_title("Abs error histogram")
+
+        mx = np.max(abs_diff_)
+        #print(np.where(abs_diff_> 0.9*mx))
         fig.canvas.set_window_title(prefix+"_Depth_Evaluation")
         plt.show()
 
@@ -308,9 +293,6 @@ if __name__ == "__main__":
         event_frame_files = sorted(glob.glob(join(flags.event_masks, '*png')))
         event_frame_files = event_frame_files[flags.prediction_offset:]
 
-    #prediction_timestamps = np.genfromtxt(join(flags.predictions_dataset, 'data/timestamps.txt'))
-    #target_timestamps = np.genfromtxt(join(flags.target_dataset, 'data/timestamps.txt'))
-
     # Information about the dataset length
     print("len of prediction files", len(prediction_files))
     print("len of target files", len(target_files))
@@ -329,7 +311,6 @@ if __name__ == "__main__":
         use_event_masks = False
 
     metrics = {}
-    metrics2 = []
 
     num_it = len(prediction_files)
 
@@ -354,14 +335,20 @@ if __name__ == "__main__":
         target_depth, predicted_depth = prepare_depth_data(target_depth[0], predicted_depth[0],
                                                            flags.clip_distance, flags.down_scale_factor, reg_factor)
 
+        """fig, ax = plt.subplots(ncols=2, nrows=1)
+        ax[0].imshow(target_depth)
+        ax[0].set_title("target depth")
+        ax[1].imshow(predicted_depth)
+        ax[1].set_title("prediction depth")
+        plt.show()"""
+
         assert predicted_depth.shape == target_depth.shape
 
         depth_mask = (np.ones_like(target_depth)>0)
+
         debug = flags.debug and idx == flags.idx
         metrics = add_to_metrics(idx, metrics, target_depth, predicted_depth, depth_mask, event_frame=None,
                                  prefix="_", rescale=flags.rescale, debug=debug, output_folder=flags.output_folder)
-
-        metrics2.append(eval_metrics(predicted_depth, target_depth))
 
         for depth_threshold in depth_values:
             depth_threshold_mask = (np.nan_to_num(target_depth) < depth_threshold)
@@ -389,9 +376,6 @@ if __name__ == "__main__":
                 #$debug=True
                 add_to_metrics(-1, metrics, target_depth, predicted_depth, event_mask & depth_threshold_mask, event_frame = event_frame, prefix=f"event_masked_{depth_threshold}_", rescale=flags.rescale, debug=debug)
 
-
     {print("%s : %f" % (k, v/num_it)) for k,v in metrics.items()}
     print("----------------------------------------------")
     {print ("%f" % (v/num_it)) for _,v in metrics.items()}
-
-    print("total metrics: ", np.sum(np.array(metrics2), 0) / len(metrics2))

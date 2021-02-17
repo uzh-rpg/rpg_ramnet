@@ -1,6 +1,9 @@
 import torch.nn.functional as F
 import torch
+import kornia
 from kornia.filters.sobel import spatial_gradient, sobel
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 def scale_invariant_loss(y_input, y_target, weight = 1.0, n_lambda = 1.0):
@@ -36,11 +39,11 @@ class MultiScaleGradient(torch.nn.Module):
             return torch.isnan(y), lambda z: z.nonzero()[0]
         
         loss_value = 0
-        loss_value_2 = 0
         diff = prediction - target
         _,_,H,W = target.shape
         upsample = torch.nn.Upsample(size=(2*H,2*W), mode='bicubic', align_corners=True)
         record = []
+        nbr_ignored_scales = 0
 
         for m in self.multi_scales:
             # input and type are of the type [B x C x H x W]
@@ -52,15 +55,21 @@ class MultiScaleGradient(torch.nn.Module):
                 is_nan = torch.isnan(delta_diff)
                 is_not_nan_sum = (~is_nan).sum()
                 # output of kornia spatial gradient is [B x C x 2 x H x W]
-                loss_value += torch.abs(delta_diff[~is_nan]).sum()/is_not_nan_sum*target.shape[0]*2
+                new_loss = torch.abs(delta_diff[~is_nan]).sum()/is_not_nan_sum*target.shape[0]*2
                 # * batch size * 2 (because kornia spatial product has two outputs).
                 # replaces the following line to be able to deal with nan's.
                 # loss_value += torch.abs(delta_diff).mean(dim=(3,4)).sum()
 
+                # ignore losses that are nan due to target = nan
+                if new_loss != new_loss:
+                    nbr_ignored_scales += 1
+                else:
+                    loss_value += new_loss
+
         if preview:
             return record
         else:
-            return (loss_value/self.num_scales)
+            return loss_value / (self.num_scales - nbr_ignored_scales)
 
 
 multi_scale_grad_loss_fn = MultiScaleGradient()

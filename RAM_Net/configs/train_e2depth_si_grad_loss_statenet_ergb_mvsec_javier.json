@@ -1,0 +1,109 @@
+{
+    "name": "e2depth_si_grad_loss_statenet_skip_conv_convgru_mvsec_initialcheckpoint_epoch200_LR0001_10000voxelg_mvsec_javier",
+    "cuda": true,
+    "gpu": 0,
+    "data_loader": {
+        "train": {
+            "type": "SequenceMVSEC",
+            "type2": "SequenceSynchronizedFramesEventsDataset",
+            "event_loader": "events_raw",
+            "nbr_of_events_per_voxelgrid": 10000,
+            "nbr_of_bins": 5,
+            "base_folder": "mvsec/mvsec_daniel/train/",
+            "base_folder2": "mvsec/carla_javier_train/",
+            "depth_folder": "depth/data",
+            "frame_folder": "rgb/frames",
+            "flow_folder": "",
+            "event_folder": "events/voxels",
+            "proba_pause_when_running": 0.0,
+            "proba_pause_when_paused": 0.0,
+            "step_size": 8,
+            "step_size2": 1,
+            "clip_distance": 80.0,
+            "every_x_rgb_frame": 5,
+            "scale_factor": 1,
+            "baseline": false,
+            "reg_factor": 3.70378
+        },
+        "validation": {
+            "type": "SequenceMVSEC",
+            "type2": "SequenceSynchronizedFramesEventsDataset",
+            "event_loader": "events_raw",
+            "nbr_of_events_per_voxelgrid": 10000,
+            "nbr_of_bins": 5,
+            "base_folder": "mvsec/mvsec_daniel/validation/",
+            "base_folder2_not": "mvsec/carla_javier_validation/",
+            "frame_folder": "rgb/frames",
+            "depth_folder": "depth/data",
+            "flow_folder": "",
+            "event_folder": "events/voxels",
+            "proba_pause_when_running": 0.0,
+            "proba_pause_when_paused": 0.0,
+            "step_size": 16,
+            "step_size2": 1,
+            "clip_distance": 80.0,
+            "every_x_rgb_frame": 5,
+            "scale_factor": 1,
+            "baseline": false,
+            "reg_factor": 3.70378
+        },
+        "batch_size": 8,
+        "num_workers": 4,
+        "pin_memory": false,
+        "normalize": true,
+        "shuffle": true
+    },
+    "lr_scheduler_type": "ExponentialLR",
+    "lr_scheduler_freq": 100,
+    "lr_scheduler": {
+        "gamma": 0.5
+    },
+    "optimizer_type": "Adam",
+    "optimizer": {
+        "lr": 0.0001,
+        "weight_decay": 0
+    },
+    "loss": {
+        "type": "scale_invariant_loss",
+        "config": {"weight": 1.0, "n_lambda" : 1.0}
+    },
+    "grad_loss": {
+        "weight": 0.25
+    },
+    "metrics": [
+        "mse",
+        "abs_rel_diff",
+        "scale_invariant_error",
+        "median_error"
+    ],
+    "trainer": {
+        "epochs": 101,
+        "sequence_length": 8,
+        "save_dir": "/data/storage/michelle/e2depth_checkpoints/training_javi",
+        "save_freq": 1,
+        "verbosity": 2,
+        "monitor": "val_loss",
+        "monitor_mode": "min",
+        "num_previews": 4,
+        "num_val_previews": 4,
+        "still_previews": true,
+        "grid_loss": true,
+        "loss_composition": ["image_last", "events_last"],
+        "loss_weights": [1, 1]
+    },
+    "arch": "ERGB2DepthRecurrent",
+    "use_phased_arch": false,
+    "model": {
+        "num_bins_rgb": 1,
+        "num_bins_events": 5,
+        "skip_type": "sum",
+        "recurrent_block_type": "conv",
+        "state_combination": "convgru",
+        "spatial_resolution": [112,112],
+        "num_encoders": 3,
+        "base_num_channels": 32,
+        "num_residual_blocks": 2,
+        "use_upsample_conv": true,
+        "norm": "none"
+    }
+}

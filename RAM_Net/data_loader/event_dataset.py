@@ -76,10 +76,10 @@ class EventDataset(Dataset):
 
         assert(self.first_stamp <= self.last_stamp)
 
-        if self.use_mvsec and not "javi" in self.base_folder:
+        '''if self.use_mvsec and not "javi" in self.base_folder:
             self.length = self.last_valid_idx - self.first_valid_idx + 1 - 1
-        else:
-            self.length = self.last_valid_idx - self.first_valid_idx + 1
+        else:'''
+        self.length = self.last_valid_idx - self.first_valid_idx + 1
         assert(self.length > 0)
 
     def parse_event_folder(self):
@@ -105,7 +105,7 @@ class EventDataset(Dataset):
         """Returns the timestamp of the ith event tensor"""
         return self.stamps[self.get_index_at(i)]
 
-    def __getitem(self, i):
+    def __getitem__(self, i):
         """Returns a C x H x W event tensor for the ith element in the dataset."""
         raise NotImplementedError
 
@@ -159,11 +159,13 @@ class VoxelGridDataset(EventDataset):
 
         return {'events': events}  # [num_bins x H x W] tensor
 
+
 class RawEventsDataset(EventDataset):
     """Load an event folder containing event tensors encoded with the VoxelGrid format."""
 
     def parse_event_folder(self):
         """Check that the passed directory has the following form:
+
         ├── event_folder
         |   ├── timestamps.txt
         |   ├── events_0000000000.npy
@@ -186,6 +188,7 @@ class RawEventsDataset(EventDataset):
         # events_raw = np.load(join(self.event_folder, 'events_{:010d}.npy'.format(self.first_valid_idx + i)))
         path_event = glob.glob(self.event_folder + '/*_{:04d}_events.npy'.format(self.first_valid_idx + i))
         events_raw = np.load(path_event[0])
+
         return events_raw
 
 
@@ -218,9 +221,11 @@ class FrameDataset(EventDataset):
             return np.dot(rgb[...,:3], [0.2989, 0.5870, 0.1140]).astype(np.float32)
 
         # frame_tensor will be a [1 x H x W] floating point array (grayscale images)
-        #print("first_valid_idx: ", self.first_valid_idx)
-        #print("index for rgb image:", self.first_valid_idx + i, "at index ", i)
-        rgb_frame = io.imread(join(self.frame_folder, 'frame_{:010d}.png'.format(self.first_valid_idx + i)), as_gray=False).astype(np.float32)
+        # print("first_valid_idx: ", self.first_valid_idx)
+        # print("index for rgb image:", self.first_valid_idx + i, "at index ", i)
+        # rgb_frame = io.imread(join(self.frame_folder, 'frame_{:010d}.png'.format(self.first_valid_idx + i)), as_gray=False).astype(np.float32)
+        path_rgbframe = glob.glob(self.frame_folder + '/*_{:04d}_image.png'.format(frame_idx + i))
+        rgb_frame = io.imread(path_rgbframe[0], as_gray=False).astype(np.float32)
         if rgb_frame.shape[2] > 1:
             frame_tensor = rgb2gray(rgb_frame) #[H x W]
         

@@ -1,21 +1,21 @@
 import os
+from os.path import join
 import json
 import logging
 import argparse
+import tqdm
 import torch
 from model.model import *
 from model.loss import *
 from model.metric import *
 from torch.utils.data import DataLoader, ConcatDataset
 from data_loader.dataset import *
+from data_loader.dataset_mvsec import SequenceMVSEC, collate_mvsec
 from trainer.lstm_trainer import LSTMTrainer
-from trainer.trainer_no_recurrent import TrainerNoRecurrent
 from utils.data_augmentation import Compose, RandomRotationFlip, RandomCrop, CenterCrop
+from data_loader.dataset_asynchronous import my_collate
 from os.path import join
 import bisect
-
-import torch.multiprocessing
-torch.multiprocessing.set_sharing_strategy('file_system')
 
 logging.basicConfig(level=logging.INFO, format='')
 
@@ -34,17 +34,21 @@ class ConcatDatasetCustom(ConcatDataset):
         return self.datasets[dataset_idx][sample_idx], dataset_idx
 
 
-def concatenate_subfolders(base_folder, dataset_type, event_folder, depth_folder, frame_folder, sequence_length,
-                           transform=None, proba_pause_when_running=0.0, proba_pause_when_paused=0.0, step_size=1,
+def concatenate_subfolders(base_folder, base_folder2, dataset_type, dataset_type2, event_folder, depth_folder, frame_folder, sequence_length,
+                           transform=None, proba_pause_when_running=0.0, proba_pause_when_paused=0.0, step_size=1, step_size2=1,
                            clip_distance=100.0, every_x_rgb_frame=1, normalize=True, scale_factor=1.0,
-                           use_phased_arch=False, baseline=False, loss_composition=False, reg_factor=5.7,
-                           dataset_idx_flag=False, recurrency=True):
+                           use_phased_arch=False, baseline=False, loss_composition=False, event_loader="voxelgrids",
+                           nbr_of_events_per_voxelgrid=0, nbr_of_bins=5, dataset_idx_flag=False):
+
     """
     Create an instance of ConcatDataset by aggregating all the datasets in a given folder
     """
 
     subfolders = os.listdir(base_folder)
     print('Found {} samples in {}'.format(len(subfolders), base_folder))
+    if base_folder2 is not None:
+        subfolders2 = os.listdir(base_folder2)
+        print('Dataset 2: Found {} samples in {}'.format(len(subfolders2), base_folder2))
 
     train_datasets = []
     for dataset_name in subfolders:
@@ -64,8 +68,29 @@ def concatenate_subfolders(base_folder, dataset_type, event_folder, depth_folder
                                                  use_phased_arch=use_phased_arch,
                                                  baseline=baseline,
                                                  loss_composition=loss_composition,
-                                                 reg_factor=reg_factor,
-                                                 recurrency=recurrency))
+                                                 event_loader=event_loader,
+                                                 nbr_of_events_per_voxelgrid=nbr_of_events_per_voxelgrid,
+                                                 nbr_of_bins=nbr_of_bins
+                                                 ))
+    if base_folder2 is not None:
+        for dataset_name in subfolders2:
+            train_datasets.append(eval(dataset_type2)(base_folder=join(base_folder2, dataset_name),
+                                                     event_folder=event_folder,
+                                                     depth_folder=depth_folder,
+                                                     frame_folder=frame_folder,
+                                                     sequence_length=sequence_length,
+                                                     transform=transform,
+                                                     proba_pause_when_running=proba_pause_when_running,
+                                                     proba_pause_when_paused=proba_pause_when_paused,
+                                                     step_size=step_size2,
+                                                     clip_distance=clip_distance,
+                                                     every_x_rgb_frame=every_x_rgb_frame,
+                                                     normalize=normalize,
+                                                     scale_factor=scale_factor,
+                                                     use_phased_arch=use_phased_arch,
+                                                     baseline=baseline,
+                                                     loss_composition=loss_composition
+                                                     ))
 
     if dataset_idx_flag == False:
         concat_dataset = ConcatDataset(train_datasets)
@@ -81,15 +106,16 @@ def main(config, resume, initial_checkpoint=None):
     L = config['trainer']['sequence_length']
     assert (L > 0)
 
-    dataset_type, base_folder, event_folder, depth_folder, frame_folder = {}, {}, {}, {}, {}
+    dataset_type, dataset_type2, base_folder, base_folder2, event_folder, depth_folder, frame_folder = {}, {}, {}, {}, {}, {}, {}
     proba_pause_when_running, proba_pause_when_paused = {}, {}
-    step_size = {}
+    step_size, step_size2 = {}, {}
     clip_distance = {}
     scale_factor = {}
     every_x_rgb_frame = {}
-    reg_factor = {}
     baseline = {}
-    recurrency = {}
+    event_loader = {}
+    nbr_of_events_per_voxelgrid = {}
+    nbr_of_bins = {}
 
     # this will raise an exception is the env variable is not set
     preprocessed_datasets_folder = os.environ['PREPROCESSED_DATASETS_FOLDER']
@@ -106,15 +132,15 @@ def main(config, resume, initial_checkpoint=None):
         proba_pause_when_paused[split] = config['data_loader'][split]['proba_pause_when_paused']
         scale_factor[split] = config['data_loader'][split]['scale_factor']
 
-        if config['arch'] == "ERGB2Depth":
-            recurrency[split] = False
-        else:
-            recurrency[split] = True
-
         try:
             step_size[split] = config['data_loader'][split]['step_size']
         except KeyError:
             step_size[split] = 1
+
+        try:
+            step_size2[split] = config['data_loader'][split]['step_size2']
+        except KeyError:
+            step_size2[split] = 1
 
         try:
             clip_distance[split] = config['data_loader'][split]['clip_distance']
@@ -132,28 +158,50 @@ def main(config, resume, initial_checkpoint=None):
             baseline[split] = False
 
         try:
-            reg_factor[split] = config['data_loader'][split]['reg_factor']
+            event_loader[split] = config['data_loader'][split]['event_loader']
         except KeyError:
-            reg_factor[split] = False
+            event_loader[split] = "voxelgrids"
+
+        try:
+            nbr_of_events_per_voxelgrid[split] = config['data_loader'][split]['nbr_of_events_per_voxelgrid']
+        except KeyError:
+            nbr_of_events_per_voxelgrid[split] = 0
+
+        try:
+            nbr_of_bins[split] = config['data_loader'][split]['nbr_of_bins']
+        except KeyError:
+            nbr_of_bins[split] = 5
+
+        try:
+            base_folder2[split] = join(preprocessed_datasets_folder, config['data_loader'][split]['base_folder2'])
+        except KeyError:
+            base_folder2[split] = None
+
+        try:
+            dataset_type2[split] = config['data_loader'][split]['type2']
+        except KeyError:
+            dataset_type2[split] = None
+
 
     loss_composition = config['trainer']['loss_composition']
     loss_weights = config['trainer']['loss_weights']
     normalize = config['data_loader'].get('normalize', True)
 
     train_dataset = concatenate_subfolders(base_folder['train'],
+                                           base_folder2['train'],
                                            dataset_type['train'],
+                                           dataset_type2['train'],
                                            event_folder['train'],
                                            depth_folder['train'],
                                            frame_folder['train'],
                                            sequence_length=L,
                                            transform=Compose([RandomRotationFlip(0.0, 0.5, 0.0),
                                                               RandomCrop(224)]),
-                                           #transform=Compose([RandomRotationFlip(0.0, 0.5, 0.0),
-                                           #                  CenterCrop([256, 512])]),
                                            #transform=CenterCrop(112),
                                            proba_pause_when_running=proba_pause_when_running['train'],
                                            proba_pause_when_paused=proba_pause_when_paused['train'],
                                            step_size=step_size['train'],
+                                           step_size2=step_size2['train'],
                                            clip_distance=clip_distance['train'],
                                            every_x_rgb_frame=every_x_rgb_frame['train'],
                                            normalize=normalize,
@@ -161,12 +209,15 @@ def main(config, resume, initial_checkpoint=None):
                                            use_phased_arch=use_phased_arch,
                                            baseline=baseline['train'],
                                            loss_composition=loss_composition,
-                                           reg_factor=reg_factor['train'],
-                                           recurrency=recurrency['train']
+                                           event_loader=event_loader['train'],
+                                           nbr_of_events_per_voxelgrid=nbr_of_events_per_voxelgrid['train'],
+                                           nbr_of_bins=nbr_of_bins['train']
                                            )
 
     validation_dataset = concatenate_subfolders(base_folder['validation'],
+                                                base_folder2['validation'],
                                                 dataset_type['validation'],
+                                                dataset_type2['validation'],
                                                 event_folder['validation'],
                                                 depth_folder['validation'],
                                                 frame_folder['validation'],
@@ -175,6 +226,7 @@ def main(config, resume, initial_checkpoint=None):
                                                 proba_pause_when_running=proba_pause_when_running['validation'],
                                                 proba_pause_when_paused=proba_pause_when_paused['validation'],
                                                 step_size=step_size['validation'],
+                                                step_size2=step_size2['validation'],
                                                 clip_distance=clip_distance['validation'],
                                                 every_x_rgb_frame=every_x_rgb_frame['validation'],
                                                 normalize=normalize,
@@ -182,18 +234,25 @@ def main(config, resume, initial_checkpoint=None):
                                                 use_phased_arch=use_phased_arch,
                                                 baseline=baseline['validation'],
                                                 loss_composition=loss_composition,
-                                                reg_factor=reg_factor['validation'],
-                                                recurrency=recurrency['validation']
+                                                event_loader=event_loader['validation'],
+                                                nbr_of_events_per_voxelgrid=nbr_of_events_per_voxelgrid['validation'],
+                                                nbr_of_bins=nbr_of_bins['validation']
                                                 )
 
     # Set up data loaders
     kwargs = {'num_workers': config['data_loader']['num_workers'],
               'pin_memory': config['data_loader']['pin_memory']} if config['cuda'] else {}
     data_loader = DataLoader(train_dataset, batch_size=config['data_loader']['batch_size'],
-                             shuffle=config['data_loader']['shuffle'], **kwargs)
+                             shuffle=config['data_loader']['shuffle'], collate_fn=collate_mvsec, **kwargs)
+
+    #for data in tqdm.tqdm(data_loader):
+    #print("Testing dataloader...")
+    #    pass
+
+    #shuffle = config['data_loader']['shuffle'], collate_fn = my_collate, ** kwargs)
 
     valid_data_loader = DataLoader(validation_dataset, batch_size=config['data_loader']['batch_size'],
-                                   shuffle=config['data_loader']['shuffle'], **kwargs)
+                                   shuffle=config['data_loader']['shuffle'], collate_fn=collate_mvsec, **kwargs)
 
     config['model']['gpu'] = config['gpu']
     config['model']['every_x_rgb_frame'] = config['data_loader']['train']['every_x_rgb_frame']
@@ -225,20 +284,12 @@ def main(config, resume, initial_checkpoint=None):
     print("Using %s with config %s" % (config['loss']['type'], config['loss']['config']))
     metrics = [eval(metric) for metric in config['metrics']]
 
-    '''if config['arch'] == "ERGB2Depth":
-        trainer = TrainerNoRecurrent(model, loss, loss_params, metrics,
-                                     resume=resume,
-                                     config=config,
-                                     data_loader=data_loader,
-                                     valid_data_loader=valid_data_loader,
-                                     train_logger=train_logger)'''
-    #else:
     trainer = LSTMTrainer(model, loss, loss_params, metrics,
-                              resume=resume,
-                              config=config,
-                              data_loader=data_loader,
-                              valid_data_loader=valid_data_loader,
-                              train_logger=train_logger)
+                          resume=resume,
+                          config=config,
+                          data_loader=data_loader,
+                          valid_data_loader=valid_data_loader,
+                          train_logger=train_logger)
 
     trainer.train()
 

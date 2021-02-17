@@ -1,4 +1,4 @@
-# Config:
+##Config:
 In the following you can find explanations of different parameters in the config whose meaning is not apparent by the name.
 
 ### name: 
@@ -25,7 +25,7 @@ If `false`, AMM-Net is trained. Other options are `rgb`, `e`, `ergb0`. For the `
 
 
 ## trainer:
-### loss_combination 
+###loss_combination 
 Defines which predictions are used to calculate the loss. It can be false (=use loss of all inputs of the network, e.g. events0, events1, events2, ..., image), or can be a list of the inputs that should be used, e.g. simply "image" or ["image", "events5"].
 For the branch `asynchronous_irregular_real_data`, ["image_last", "events_last"] should be used as depth data is not available at intermediate timesteps.
 For the baselines in simulation, it should be equal to "image".
@@ -35,6 +35,3 @@ For the baselines in simulation, it should be equal to "image".
 For the baselines, it should be defined as "convlstm", this will be the recurrent layer in the encoder.
 ### spatial_resolution:
 Only needed for the use with phased LSTM to properly load the model at test time. However, as phased LSTM is not used in the tested configurations, this could be omitted.
-
-
-

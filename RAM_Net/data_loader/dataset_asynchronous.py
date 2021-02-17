@@ -9,6 +9,7 @@ from skimage import io
 from os.path import join
 import numpy as np
 from utils.util import first_element_greater_than, last_element_less_than
+from utils.event_tensor_utils import events_to_voxel_grid
 import random
 import glob
 import torch
@@ -20,16 +21,22 @@ from math import fabs
 
 class SynchronizedFramesEventsRawDataset(Dataset):
     """Loads time-synchronized event tensors and depth from a folder.
+
     This Dataset class iterates through all the event tensors and returns, for each tensor,
     a dictionary of the form:
+
         {'depth': frame, 'events': events, 'flow': disp_01, 'semantic': semantic}
+
     where:
+
     * depth is a H x W tensor containing the first frame whose timestamp >= event tensor
     * events is a C x H x W tensor containing the event data
     * flow is a 2 x H x W tensor containing the flow (displacement) from the current frame to the last frame
-    * semantic is a 1 x H x W tensor containing the semantic labels
+    * semantic is a 1 x H x W tensor containing the semantic labels 
+
     This loader assumes that each event tensor can be uniquely associated with a frame.
     For each event tensor with timestamp e_t, the corresponding frame is the first frame whose timestamp f_t >= e_t
+
     """
 
     def __init__(self, base_folder, event_folder, depth_folder='frames', frame_folder='rgb', flow_folder='flow', semantic_folder='semantic',
@@ -71,7 +78,7 @@ class SynchronizedFramesEventsRawDataset(Dataset):
         self.height, self.width = dummy_frame.shape
 
         # create dummy input to know shape of voxelgrids after transform
-        dummy_input = self.events_to_voxel_grid(np.zeros([10, 4]), self.nbr_of_bins, self.height, self.width)
+        dummy_input = events_to_voxel_grid(np.zeros([10, 4]), self.nbr_of_bins, self.height, self.width)
         dummy_input = self.transform(torch.from_numpy(dummy_input))
         self.height_voxelgrid, self.width_voxelgrid = dummy_input.shape[1], dummy_input.shape[2]
 
@@ -101,7 +108,7 @@ class SynchronizedFramesEventsRawDataset(Dataset):
     def __len__(self):
         return self.length
 
-    def __getitem__(self, i, seed=None, reg_factor=5.70378):
+    def __getitem__(self, i, seed=None, reg_factor=3.70378):
         assert(i >= 0)
         assert(i < (self.length // self.every_x_rgb_frame))
         item = {}
@@ -111,6 +118,7 @@ class SynchronizedFramesEventsRawDataset(Dataset):
 
         def nan_helper(self, y):
             """Helper to handle indices and logical indices of NaNs.
+
             Input:
                 - y, 1d numpy array with possible NaNs
             Output:
@@ -154,16 +162,54 @@ class SynchronizedFramesEventsRawDataset(Dataset):
 
             # Get the event tensor from the event dataset loader
             # Note that we pass the transform seed to ensure the same transform is
-            events = self.event_dataset.__getitem__(j, seed)
+            if self.baseline != 'rgb':
+                events = self.event_dataset.__getitem__(j, seed)
             if events_overall is None:
                 events_overall = events
             else:
                 events_overall = np.append(events_overall, events, axis=0)
+            print(events_overall)
+
+            if self.baseline == "ergb":
+                # get last seen rgb frame and add it to event tensors
+                if frame_idx == 0 and k == 0:
+                    path_dummy_input = glob.glob(self.frame_folder + '/*_0000_image.png')
+                    dummy_input = io.imread(path_dummy_input[0], as_gray=False).astype(np.float32)
+                    dummy_input = rgb2gray(dummy_input)  # [H x W]
+                    dummy_input = np.expand_dims(dummy_input, axis=0)  # expand to [1 x H x W]
+                    dummy_input = torch.from_numpy(dummy_input)
+                    if self.transform:
+                        random.seed(seed)
+                        dummy_input = self.transform(dummy_input)
+                    last_gray_frame = torch.zeros_like(dummy_input)
+                elif k == 0 or k == self.every_x_rgb_frame - 1:
+                    if k == 0:
+                        # take the last seen rgb frame and copy it for all ergb tensors
+                        path_rgbframe = glob.glob(self.frame_folder + '/*_{:04d}_image.png'.format(frame_idx-(k+1)))
+                        rgb_frame = io.imread(path_rgbframe[0], as_gray=False).astype(np.float32)
+                    elif k == self.every_x_rgb_frame - 1:
+                        # for the last event in the batch, take the new/current rgb frame.
+                        path_rgbframe = glob.glob(self.frame_folder + '/*_{:04d}_image.png'.format(frame_idx))
+                        rgb_frame = io.imread(path_rgbframe[0], as_gray=False).astype(np.float32)
+                    if rgb_frame.shape[2] > 1:
+                        last_gray_frame = rgb2gray(rgb_frame)  # [H x W]
+                    last_gray_frame /= 255.0  # normalize
+                    last_gray_frame = np.expand_dims(last_gray_frame, axis=0)  # expand to [1 x H x W]
+                    last_gray_frame = torch.from_numpy(last_gray_frame)
+                    if self.transform:
+                        random.seed(seed)
+                        last_gray_frame = self.transform(last_gray_frame)
+
+                    rgb_overall.append(last_gray_frame)
 
         # construct voxelgrids out of raw events
         total_events = events_overall.shape[0]
-
-        nbr_voxelgrids = 1
+        # self.nbr_events_per_frame.append(total_events)
+        if total_events < self.nbr_of_events_per_voxelgrid:
+            nbr_voxelgrids = 1
+        else:
+            nbr_voxelgrids = int(np.floor(total_events / self.nbr_of_events_per_voxelgrid))
+        nbr_voxelgrids = 10 if nbr_voxelgrids > 10 else nbr_voxelgrids
         nbr_events_per_voxelgrid = int(np.floor(total_events / nbr_voxelgrids))
         # print(nbr_voxelgrids, nbr_events_per_voxelgrid, total_events)
 
@@ -172,19 +218,38 @@ class SynchronizedFramesEventsRawDataset(Dataset):
         else:
             all_voxelgrids = torch.zeros(nbr_voxelgrids, self.nbr_of_bins, self.height_voxelgrid, self.width_voxelgrid)
 
-        voxelgrid = self.events_to_voxel_grid(events_overall, self.nbr_of_bins, self.height, self.width)
+        for i in range(nbr_voxelgrids):
+            # if total_events < (i + 2) * nbr_events_per_voxelgrid:
+            if i == nbr_voxelgrids - 1:
+                # if this is the last voxelgrid of this datapack, use the rest of the data.
+                voxelgrid = events_to_voxel_grid(
+                    events_overall[i * nbr_events_per_voxelgrid:-1], self.nbr_of_bins, self.height, self.width)
+            else:
+                voxelgrid = events_to_voxel_grid(
+                    events_overall[i * nbr_events_per_voxelgrid:(i + 1) * nbr_events_per_voxelgrid],
+                    self.nbr_of_bins, self.height, self.width)
+            # for debugging:
+            # print("mean: ", [np.mean(voxelgrid[ii, :, :]) for ii in range(self.nbr_of_bins)])
+            # print("max: ", [np.max(voxelgrid[ii, :, :]) for ii in range(self.nbr_of_bins)])
+            # print("min: ", [np.min(voxelgrid[ii, :, :]) for ii in range(self.nbr_of_bins)])
+            if self.normalize:
+                voxelgrid = normalize_voxelgrid(voxelgrid)
+            voxelgrid = torch.from_numpy(voxelgrid)
+            if self.transform:
+                random.seed(seed)
+                voxelgrid = self.transform(voxelgrid)
+            # print([torch.mean(voxelgrid[ii, :, :]) for ii in range(self.nbr_of_bins)])
+            if self.baseline == 'ergb':
+                if i < nbr_voxelgrids - 1:
+                    all_voxelgrids[i, :, :, :] = torch.cat((voxelgrid, rgb_overall[0]), axis=0)
+                elif i == nbr_voxelgrids - 1:
+                    all_voxelgrids[i, :, :, :] = torch.cat((voxelgrid, rgb_overall[-1]), axis=0)
+            else:
+                all_voxelgrids[i, :, :, :] = voxelgrid
 
-        # for debugging:
-        # print("mean: ", [np.mean(voxelgrid[ii, :, :]) for ii in range(self.nbr_of_bins)])
-        # print("max: ", [np.max(voxelgrid[ii, :, :]) for ii in range(self.nbr_of_bins)])
-        # print("min: ", [np.min(voxelgrid[ii, :, :]) for ii in range(self.nbr_of_bins)])
-
-        if self.normalize:
-            voxelgrid = self.normalize_voxelgrid(voxelgrid)
-        voxelgrid = torch.from_numpy(voxelgrid)
-        if self.transform:
-            random.seed(seed)
-            voxelgrid = self.transform(voxelgrid)
+        if not bool(self.baseline) or self.baseline == 'e' or self.baseline == 'ergb':
+            item['events'] = all_voxelgrids
+            item['batchlength_events'] = nbr_voxelgrids
 
         # Get RGB frame and corresponding depth frame
         # Load numpy depth ground truth depth frame
@@ -223,81 +288,37 @@ class SynchronizedFramesEventsRawDataset(Dataset):
             timestamp = torch.from_numpy(np.asarray([event_timestamp]).astype(np.float32))
             # timestamp = torch.tensor([event_timestamp])
 
-        try:
-            # rgb_frame = io.imread(join(self.frame_folder, 'frame_{:010d}.png'.format(frame_idx)),
-            #                      as_gray=False).astype(np.float32)
-            path_rgbframe = glob.glob(self.frame_folder + '/*_{:04d}_image.png'.format(frame_idx))
-            rgb_frame = io.imread(path_rgbframe[0], as_gray=False).astype(np.float32)
-            if rgb_frame.shape[2] > 1:
-                gray_frame = rgb2gray(rgb_frame)  # [H x W]
+        if self.frame_folder is not None and (not bool(self.baseline) or self.baseline == 'rgb'):
+            try:
+                # rgb_frame = io.imread(join(self.frame_folder, 'frame_{:010d}.png'.format(frame_idx)),
+                #                      as_gray=False).astype(np.float32)
+                path_rgbframe = glob.glob(self.frame_folder + '/*_{:04d}_image.png'.format(frame_idx))
+                rgb_frame = io.imread(path_rgbframe[0], as_gray=False).astype(np.float32)
+                if rgb_frame.shape[2] > 1:
+                    gray_frame = rgb2gray(rgb_frame)  # [H x W]
 
-            gray_frame /= 255.0  # normalize
-            gray_frame = np.expand_dims(gray_frame, axis=0)  # expand to [1 x H x W]
-            gray_frame = torch.from_numpy(gray_frame)
-            if self.transform:
-                random.seed(seed)
-                gray_frame = self.transform(gray_frame)
+                gray_frame /= 255.0  # normalize
+                gray_frame = np.expand_dims(gray_frame, axis=0)  # expand to [1 x H x W]
+                gray_frame = torch.from_numpy(gray_frame)
+                if self.transform:
+                    random.seed(seed)
+                    gray_frame = self.transform(gray_frame)
 
-            # Combine events with grayscale frames
-            # events["events"] = torch.cat((events["events"], gray_frame), axis=0)
-        except FileNotFoundError:
-            gray_frame = None
+                # Combine events with grayscale frames
+                # events["events"] = torch.cat((events["events"], gray_frame), axis=0)
+            except FileNotFoundError:
+                gray_frame = None
 
-        item['image'] = torch.cat((voxelgrid, gray_frame), axis=0)
+        if not bool(self.baseline) or self.baseline == 'rgb':
+            item['image'] = gray_frame
         item['depth_image'] = frame
         if self.use_phased_arch:
             item['times_image'] = timestamp
 
         return item
 
-    def events_to_voxel_grid(self, events, num_bins, height, width):
-        """
-        Build a voxel grid with bilinear interpolation in the time domain from a set of events.
-        :param events: a [N x 4] NumPy array containing one event per row in the form: [timestamp, x, y, polarity]
-        :param num_bins: number of bins in the temporal axis of the voxel grid
-        :param width, height: dimensions of the voxel grid
-        """
 
-        assert (events.shape[1] == 4)
-        assert (num_bins > 0)
-        assert (width > 0)
-        assert (height > 0)
-
-        voxel_grid = np.zeros((num_bins, height, width), np.float32).ravel()
-
-        # normalize the event timestamps so that they lie between 0 and num_bins
-        last_stamp = events[-1, 0]
-        first_stamp = events[0, 0]
-        deltaT = last_stamp - first_stamp
-
-        if deltaT == 0:
-            deltaT = 1.0
-
-        events[:, 0] = (num_bins - 1) * (events[:, 0] - first_stamp) / deltaT
-        ts = events[:, 0]
-        xs = events[:, 1].astype(np.int)
-        ys = events[:, 2].astype(np.int)
-        pols = events[:, 3]
-        pols[pols == 0] = -1  # polarity should be +1 / -1
-
-        tis = ts.astype(np.int)
-        dts = ts - tis
-        vals_left = pols * (1.0 - dts)
-        vals_right = pols * dts
-
-        valid_indices = tis < num_bins
-        np.add.at(voxel_grid, xs[valid_indices] + ys[valid_indices] * width +
-                  tis[valid_indices] * width * height, vals_left[valid_indices])
-
-        valid_indices = (tis + 1) < num_bins
-        np.add.at(voxel_grid, xs[valid_indices] + ys[valid_indices] * width +
-                  (tis[valid_indices] + 1) * width * height, vals_right[valid_indices])
-
-        voxel_grid = np.reshape(voxel_grid, (num_bins, height, width))
-
-        return voxel_grid
-
-    def normalize_voxelgrid(self, event_tensor):
+def normalize_voxelgrid(event_tensor):
         # normalize the event tensor (voxel grid) in such a way that the mean and stddev of the nonzero values
         # in the tensor are equal to (0.0, 1.0)
         mask = np.nonzero(event_tensor)
@@ -306,3 +327,37 @@ class SynchronizedFramesEventsRawDataset(Dataset):
             if stddev > 0:
                 event_tensor[mask] = (event_tensor[mask] - mean) / stddev
         return event_tensor
+
+
+def my_collate(batch):
+    # batch: list of length batch_size. Each entry is a sequence of dicts, that contains the data
+    # (keys: image, events, depth_image). size of batch: batch_size, seq_length, dict_entries, [1, x, x, x]
+    # return_sequence should be a sequence of dicts, where each dict contains all corresponding
+    # entries of the whole batch. size of return sequence: seq_length, dict entries, [batch_size, x, x, x]
+    print("preparing batch in collate")
+    return_sequence = []
+    sequence_length = len(batch[0])
+    batch_size = len(batch)
+    for j in range(sequence_length):
+        # loop over the whole sequence to fill return_sequence list
+        return_dict = {}  # entry of return_sequence
+        for key in batch[0][j].keys():
+            if key != "events":
+                # all keys apart from "events" have the same dimension for each sample in the batch, therefore the
+                # default_collate function can be used.
+                return_dict[key] = default_collate([seq_item[key] for seq_item in [seq[j] for seq in batch]])
+        max_nbr_voxelgrids = max([batch[i][j]['batchlength_events'] for i in range(batch_size)])
+        # create zero tensor in a shape that is able to include the largest batch entry. All other entries will be
+        # automatically padded with zeros.
+        events = torch.zeros(batch_size, max_nbr_voxelgrids, batch[0][j]['events'].shape[1],
+                             batch[0][j]['events'].shape[2], batch[0][j]['events'].shape[3])
+        for i in range(batch_size):
+            nbr_voxelgrids = batch[i][j]['batchlength_events']
+            # print("nbr voxelgrids: ", nbr_voxelgrids)
+            # print("shape input: ", batch[i][j]['events'].shape)
+            events[i, 0:nbr_voxelgrids, :, :, :] = batch[i][j]['events']
+        return_dict['events'] = events
+        # print("shape events: ", events.shape)
+        return_sequence.append(return_dict)
+
+    return return_sequence

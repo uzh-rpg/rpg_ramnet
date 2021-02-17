@@ -50,8 +50,6 @@ For the `evaluation.py` script, the clip distance and reg_factor need to be spec
 CUDA_VISIBLE_DEVICES=0 python evaluation.py --target_dataset /data/storage/michelle/e2depth_evaluation/EventScape_final/baseline_rgb_clip1000/ground_truth/npy/depth_image/ --predictions_dataset /data/storage/michelle/e2depth_evaluation/EventScape_final/baseline_rgb_clip1000/npy/image/ --clip_distance 1000 --reg_factor 5.70378
 ```
 
-
-
-## Training of AMM-Net
+## Training of RAM-Net
 The final training checkpoints of RAM-Net can be found in `/data/storage/michelle/e2depth_checkpoints` under `EventScape` and `mvsec_training`
 The outputs from the `test.py` script for the final testing can be found in `/data/storage/michelle/e2depth_evaluation` in `EventScape_final` and `mvsec_final`

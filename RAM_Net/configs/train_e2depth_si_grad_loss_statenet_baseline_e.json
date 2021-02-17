@@ -1,52 +1,62 @@
 {
-    "name": "e2depth_si_grad_loss_statenet_skip_convlstm_baseline_e_every5loss_LR0003_S5_100_scale1",
+<<<<<<< HEAD
+    "name": "e2depth_si_grad_loss_statenet_skip_convlstm_baseline_e_every1eframes_sparsesupervision_dataloader3",
+=======
+    "name": "e2depth_si_grad_loss_statenet_skip_convlstm_baseline_e_every1eframes_sparse25supervision",
+>>>>>>> e2depth_michelle_state_network_dataloader2
     "cuda": true,
     "gpu": 0,
     "data_loader": {
         "train": {
             "type": "SequenceSynchronizedFramesEventsDataset",
+            "event_loader": "events_raw",
+            "nbr_of_events_per_voxelgrid": 40000,
+            "nbr_of_bins": 5,
             "base_folder": "dataset_mathias_23_07/train",
             "depth_folder": "depth/data",
             "frame_folder": "rgb/data",
             "flow_folder": "",
-            "event_folder": "events/voxels",
+            "event_folder": "events/data",
             "proba_pause_when_running": 0.0,
             "proba_pause_when_paused": 0.0,
-            "step_size": 5,
+            "step_size": 2,
             "clip_distance": 1000.0,
-            "every_x_rgb_frame": 5,
-            "scale_factor": 1,
+            "every_x_rgb_frame": 25,
+            "scale_factor": 0.5,
             "baseline": "e"
         },
         "validation": {
             "type": "SequenceSynchronizedFramesEventsDataset",
+            "event_loader": "events_raw",
+            "nbr_of_events_per_voxelgrid": 40000,
+            "nbr_of_bins": 5,
             "base_folder": "dataset_mathias_23_07/validation",
             "frame_folder": "rgb/data",
             "depth_folder": "depth/data",
             "flow_folder": "",
-            "event_folder": "events/voxels",
+            "event_folder": "events/data",
             "proba_pause_when_running": 0.0,
             "proba_pause_when_paused": 0.0,
-            "step_size": 5,
+            "step_size": 2,
             "clip_distance": 1000.0,
-            "every_x_rgb_frame": 5,
-            "scale_factor": 1,
+            "every_x_rgb_frame": 25,
+            "scale_factor": 0.5,
             "baseline": "e"
         },
-        "batch_size": 8,
+        "batch_size": 10,
         "num_workers": 4,
         "pin_memory": true,
         "normalize": true,
         "shuffle": true
     },
     "lr_scheduler_type": "ExponentialLR",
-    "lr_scheduler_freq": 100,
+    "lr_scheduler_freq": 1000,
     "lr_scheduler": {
-        "gamma": 0.5
+        "gamma": 1.0
     },
     "optimizer_type": "Adam",
     "optimizer": {
-        "lr": 0.0003,
+        "lr": 0.0001,
         "weight_decay": 0
     },
     "loss": {
@@ -63,9 +73,9 @@
         "median_error"
     ],
     "trainer": {
-        "epochs": 201,
-        "sequence_length": 10,
-        "save_dir": "/data/storage/michelle/e2depth_checkpoints/EventScape",
+        "epochs": 101,
+        "sequence_length": 15,
+        "save_dir": "/data/storage/michelle/e2depth_checkpoints/dataloader_3/",
         "save_freq": 4,
         "verbosity": 2,
         "monitor": "val_loss",
@@ -74,9 +84,8 @@
         "num_val_previews": 2,
         "still_previews": true,
         "grid_loss": true,
-        "loss_composition": "image",
+        "loss_composition": "events_last",
         "loss_weights": [1]
-
     },
     "arch": "ERGB2DepthRecurrent",
     "use_phased_arch": false,

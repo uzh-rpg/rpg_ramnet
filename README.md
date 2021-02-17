@@ -49,11 +49,17 @@ To run experiments on Event Scape plese switch to the `main` branch
 
     git checkout main
     
-To run experiments on real data from MVSEC, switch to `asynchronous_irregular_data`.
+To run experiments on real data from MVSEC, switch to `asynchronous_irregular_real_data`.
 
-    git checkout asynchronous_irregular_data
-    
- ## EventScape
+    git checkout asynchronous_irregular_real_data
+
+## Checkpoints
+
+The checkpoints for RAM-Net can be found here:
+* [trained on EventScape](http://rpg.ifi.uzh.ch/data/RAM_Net/checkpoints/ramnet_sim.pth.tar)
+* [trained on MVSEC](http://rpg.ifi.uzh.ch/data/RAM_Net/checkpoints/ramnet_sim2real.pth.tar)
+
+## EventScape
 
 This work uses the EventScape dataset which can be downloaded here:
 

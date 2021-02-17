@@ -1,13 +1,15 @@
 from base import BaseModel
+from itertools import compress
+import copy
+import numpy as np
 import torch.nn as nn
 import torch
-from model.unet import UNet
+import time
 from model.statenet import StateNetPhasedRecurrent
 from os.path import join
 from model.submodules import \
     ConvLSTM, ResidualBlock, ConvLayer, \
     UpsampleConvLayer, TransposedConvLayer
-
 
 class BaseERGB2Depth(BaseModel):
     def __init__(self, config):
@@ -76,40 +78,6 @@ class BaseERGB2Depth(BaseModel):
         self.kernel_size = int(config.get('kernel_size', 5))
         self.gpu = torch.device('cuda:' + str(config['gpu']))
 
-class ERGB2Depth(BaseERGB2Depth):
-    def __init__(self, config):
-        super(ERGB2Depth, self).__init__(config)
-
-        self.unet = UNet(num_input_channels=self.num_bins_rgb,
-                         num_output_channels=1,
-                         skip_type=self.skip_type,
-                         activation='sigmoid',
-                         num_encoders=self.num_encoders,
-                         base_num_channels=self.base_num_channels,
-                         num_residual_blocks=self.num_residual_blocks,
-                         norm=self.norm,
-                         use_upsample_conv=self.use_upsample_conv)
-
-    def forward(self, item, prev_super_states, prev_states_lstm):
-        #def forward(self, event_tensor, prev_states=None):
-        """
-        :param event_tensor: N x num_bins x H x W
-        :return: a predicted image of size N x 1 x H x W, taking values in [0,1].
-        """
-        predictions_dict = {}
-        '''for key in item.keys():
-            if "depth" not in key:
-                event_tensor = item[key].to(self.gpu)
-
-                prediction = self.unet.forward(event_tensor)
-                predictions_dict[key] = prediction'''
-
-        event_tensor = item["image"].to(self.gpu)
-        prediction = self.unet.forward(event_tensor)
-        predictions_dict["image"] = prediction
-
-        return predictions_dict, {'image': None}, prev_states_lstm
-
 
 class ERGB2DepthRecurrent(BaseERGB2Depth):
     """
@@ -137,83 +105,112 @@ class ERGB2DepthRecurrent(BaseERGB2Depth):
                                                                recurrent_block_type=self.recurrent_block_type,
                                                                baseline=self.baseline)
         self.max_num_channels = self.base_num_channels * pow(2, self.num_encoders)
+        self.time_measurements_events = []
+        self.time_measurements_images = []
 
-    def forward(self, item, prev_super_states, prev_states_lstm):
+    def forward(self, item, prev_super_states_batch, prev_states_lstm):
+        # create lists for return
+        predictions_dict_batch, super_states_batch, states_lstm_dict_batch = [], [], []
 
-        predictions_dict, super_state_dict, states_lstm_dict = {}, {}, {}
 
-        # initialize state if state is not defined yet
-        if prev_super_states is None:
-            # print("state is none, state is initialized")
-            prev_super_states = []
-            B, C, H, W = item['image'].shape
-            for i in range(self.num_encoders):
-                H_state = int(H / pow(2, i + 1))
-                W_state = int(W / pow(2, i + 1))
-                N_channels = int(self.base_num_channels * pow(2, i + 1))
-                if not bool(self.baseline) and self.state_combination == 'convlstm':
-                    # for state with convlstm, state has two entries (hidden & cell state)
-                    prev_super_states.append([torch.zeros([B, N_channels, H_state, W_state]).to(self.gpu),
-                                              torch.zeros([B, N_channels, H_state, W_state]).to(self.gpu)])
-                else:
-                    prev_super_states.append(torch.zeros([B, N_channels, H_state, W_state]).to(self.gpu))
+        # loop over whole batch
+        for i, batch_entry in enumerate(item):
+            #print("keys: ", [list(items.keys())[0] for items in batch_entry])
+            if len(batch_entry) > 2:
 
-        if not bool(self.baseline) or self.baseline == "ergb0" \
-                or (self.baseline == "e" and self.loss_composition == "image"):
-            # events are only processed for these combinations.
+                predictions_dict, states_lstm_dict = {}, {}
+                # if not self.baseline:
+                last_lstm_state_events = prev_states_lstm[i]["events_last"]
+                last_lstm_state_image = prev_states_lstm[i]["image_last"]
 
-            if self.baseline == "ergb0" or (self.baseline == "e" and self.loss_composition == "image"):
-                loop_range = self.every_x_rgb_frame - 1
-                last_lstm_state = prev_states_lstm['image']
-                # for baselines, the same encoders is used for image or event input, so the last_lstm_state is
-                # the one from the last image.
+                # get indexes of last events and image
+                last_event_index = None
+                if not self.baseline:
+                    for k, entry in reversed(list(enumerate(batch_entry))):
+                        if "events" in list(entry.keys())[0]:
+                            last_event_index = k
+                            break
+
+                last_image_index = None
+                for k, entry in reversed(list(enumerate(batch_entry))):
+                    if "image" in list(entry.keys())[0]:
+                        last_image_index = k
+                        break
+                #print("last indexes: ", last_event_index, last_image_index)
+
+                prev_super_states = prev_super_states_batch[i]
+
+                # initialize state if state is not defined yet
+                if prev_super_states is None:
+                    # print("state is none, state is initialized")
+                    prev_super_states = []
+                    B = 1  # state is only defined separately for each entry of whole batch, therefore B=1
+                    _, H, W = list(item[0][0].values())[0].shape
+                    for i in range(self.num_encoders):
+                        H_state = int(H / pow(2, i + 1))
+                        W_state = int(W / pow(2, i + 1))
+                        N_channels = int(self.base_num_channels * pow(2, i + 1))
+                        if not bool(self.baseline) and self.state_combination == 'convlstm':
+                            # for state with convlstm, state has two entries (hidden & cell state)
+                            prev_super_states.append([torch.zeros([B, N_channels, H_state, W_state]).to(self.gpu),
+                                                      torch.zeros([B, N_channels, H_state, W_state]).to(self.gpu)])
+                        else:
+                            prev_super_states.append(torch.zeros([B, N_channels, H_state, W_state]).to(self.gpu))
+
+                # loop over all image and events datasets
+                for j, data_item in enumerate(batch_entry):
+                    key = list(data_item.keys())[0]
+                    if "depth" not in key and key != "img_loss":
+                        input_tensor = data_item[key].to(self.gpu)
+
+                        #t0 = time.time()
+                        if "events" in key:
+                            # run through event encoder and decoder
+                            super_states, states_lstm_events = \
+                                self.statenetphasedrecurrent.forward_events(input_tensor[None, :], prev_super_states,
+                                                                            last_lstm_state_events, None)
+                            prediction = self.statenetphasedrecurrent.forward_decoder(super_states)
+                            last_lstm_state_events = states_lstm_events
+                            #t1 = time.time() - t0
+                            #self.time_measurements_events.append(t1)
+                            #print("Timing statistics for events: ", np.mean(np.asarray(self.time_measurements_events)),
+                            #      min(self.time_measurements_events), max(self.time_measurements_events))
+
+                        elif "image" in key:
+                            # run through image encoder and decoder
+                            super_states, states_lstm_image = \
+                                self.statenetphasedrecurrent.forward_images(input_tensor[None, :], prev_super_states,
+                                                                            last_lstm_state_image, None)
+                            prediction = self.statenetphasedrecurrent.forward_decoder(super_states)
+                            #t1 = time.time() - t0
+                            #self.time_measurements_images.append(t1)
+                            last_lstm_state_image = states_lstm_image
+                            #print("Timing statistics for images: ", np.mean(np.asarray(self.time_measurements_images)),
+                            #    min(self.time_measurements_images), max(self.time_measurements_images))
+
+                        predictions_dict[key] = prediction
+                        prev_super_states = super_states
+
+                        if j == last_event_index or j == last_image_index:
+                            if j == last_event_index:
+                                states_lstm_dict["events_last"] = last_lstm_state_events
+                                predictions_dict["events_last"] = prediction
+                            else:
+                                states_lstm_dict["image_last"] = last_lstm_state_image
+                                predictions_dict["image_last"] = prediction
+
+                        if last_image_index is None:
+                            states_lstm_dict["image_last"] = last_lstm_state_image
+                        if last_event_index is None:
+                            states_lstm_dict["events_last"] = last_lstm_state_events
+
+
+                predictions_dict_batch += [predictions_dict]
+                super_states_batch += [super_states]
+                states_lstm_dict_batch += [states_lstm_dict]
             else:
-                loop_range = self.every_x_rgb_frame
-                last_lstm_state = prev_states_lstm['events{}'.format(self.every_x_rgb_frame - 1)]
-                # for statenet, events and images have different encoders, so the last_lstm_state is the one
-                # from the last event of the previous sequence.
-
-            for k in range(loop_range):
-                event_tensor = item['events{}'.format(k)].to(self.gpu)
-                times = None
-                # implement if phased architecture is used!
-                #times = item['times'].float().to(self.gpu) if self.use_phased_arch else None
-                if self.baseline == "ergb0" or self.baseline == 'e':
-                    # baselines don't have an event encoder, so forward_images is used here.
-                    super_states_events, states_lstm_events = \
-                        self.statenetphasedrecurrent.forward_images(event_tensor, prev_super_states,
-                                                                    last_lstm_state, times)
-                else:
-                    super_states_events, states_lstm_events = \
-                        self.statenetphasedrecurrent.forward_events(event_tensor, prev_super_states,
-                                                                    last_lstm_state, times)
-
-                prediction_events = self.statenetphasedrecurrent.forward_decoder(super_states_events)
-
-                predictions_dict['events{}'.format(k)] = prediction_events
-                super_state_dict['events{}'.format(k)] = super_states_events
-                states_lstm_dict['events{}'.format(k)] = states_lstm_events
-                prev_super_states = super_states_events
-                last_lstm_state = states_lstm_events
-                # reset lstm_state for next loop round.
-
-        image_tensor = item['image'].to(self.gpu)
-        times = None
-
-        if not bool(self.baseline) or self.baseline == "rgb" \
-                or (self.baseline == "e" and self.loss_composition != "image"):
-            # for statenet, there is a seperate image encoder which needs the last_lstm_state to be the one last
-            # seen by this encoder. For the baselines that don't have events inbetween frames, the last seen lstm
-            # state is also the "image" one.
-            last_lstm_state = prev_states_lstm['image']
-
-        super_states_images, states_lstm_images = \
-            self.statenetphasedrecurrent.forward_images(image_tensor, prev_super_states,
-                                                        last_lstm_state, times)
-        prediction_images = self.statenetphasedrecurrent.forward_decoder(super_states_images)
-
-        predictions_dict['image'] = prediction_images
-        super_state_dict['image'] = super_states_images
-        states_lstm_dict['image'] = states_lstm_images
-
-        return predictions_dict, super_state_dict, states_lstm_dict
+                predictions_dict_batch += [{}]
+                super_states_batch += [prev_super_states_batch[i]]
+                states_lstm_dict_batch += [{"image_last": prev_states_lstm[i]["image_last"],
+                                           "events_last": prev_states_lstm[i]["events_last"]}]
+        return predictions_dict_batch, super_states_batch, states_lstm_dict_batch
