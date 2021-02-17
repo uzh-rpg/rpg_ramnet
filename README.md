@@ -8,7 +8,7 @@ This is the code for the paper **Combining Events and Frames using Recurrent Asy
 Scaramuzza](http://rpg.ifi.uzh.ch/people_scaramuzza.html):
 
 You can find a pdf of the paper
-[here](http://rpg.ifi.uzh.ch/docs/RAL21_Gehrig.pdf). If you use this work in an academic context, please cite the following publication:
+[here](http://rpg.ifi.uzh.ch/docs/RAL21_Gehrig.pdf) and the project homepage [here](http://rpg.ifi.uzh.ch/RAM_Net.html). If you use this work in an academic context, please cite the following publication:
 
 ```bibtex
 @Article{RAL21Gehrig,
