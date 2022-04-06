@@ -4,7 +4,7 @@
 </p>
 
 This is the code for the paper **Combining Events and Frames using Recurrent Asynchronous Multimodal Networks for Monocular Depth Prediction** by
-[Daniel Gehrig*](https://danielgehrig18.github.io/), Michelle Rüegg*, Mathias Gehrig, [Javier Hidalgo-Carrió](https://jhidalgocarrio.github.io), and [Davide
+[Daniel Gehrig*](https://danielgehrig18.github.io/), Michelle Rüegg*, [Mathias Gehrig](https://magehrig.github.io/), [Javier Hidalgo-Carrió](https://jhidalgocarrio.github.io), and [Davide
 Scaramuzza](http://rpg.ifi.uzh.ch/people_scaramuzza.html):
 
 You can find a pdf of the paper
